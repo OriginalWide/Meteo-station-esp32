@@ -1,0 +1,617 @@
+
+
+```markdown
+# 🚀 Mioveni Quantum OS (v6.8) - ESP32 Smart Display & Weather Station
+
+Un sistem operativ minimalist și futurist (Quantum OS v6.8) rulat pe un **ESP32** și afișat pe un ecran **TFT LCD ST7735 (1.8")**. Proiectul include telemetrie meteo live de la Open-Meteo, radar termic FLIR simulat pentru zona Mioveni, animații fluide, conexiune Wi-Fi și un modul dedicat de **Ceas & Dată Exactă NTP** sincronizat în timp real.
+
+---
+
+## 📱 Prezentare Ecrane (Pagini Interactive)
+Navigarea se face prin 2 butoane externe (`BTN_NEXT` și `BTN_PREV`):
+1. **Dashboard Principal:** Temperatură live cu tranziție numerică lină + temperatură resimțită & umiditate.
+2. **Telemetrie Meteo:** Presiune atmosferică (hPa), Index UV și vizibilitate.
+3. **Radar Termic Live (Mioveni FLIR Map):** Matrice dinamică cu grade termice animate în timp real.
+4. **Dinamica Vântului:** Viteza vântului (km/h) și direcția în grade.
+5. **System Core:** Informații despre procesorul ESP32, timpul de execuție al ciclului (în microsecunde) și pachetele de date transferate.
+6. **Ceas & Dată Exactă NTP:** Ziua săptămânii în limba română (ex: *Marti*), data completă (*25 Aug 2026*) și ora exactă cu **secunde în timp real** (*11:06:52*).
+
+---
+
+## 🛠️ Componente Hardware Necesare
+* **Placă de dezvoltare ESP32** (NodeMCU / DevKit 30 pini)
+* **Ecran TFT LCD ST7735** (1.8 inch, 128x160 pixeli)
+* **2x Push-butoane** (pentru navigarea prin pagini)
+* **Fire de legătură (Jumper wires)** și breadboard
+
+---
+
+## 🔌 Diagrama de Conexiuni Complete (Pinout)
+
+### 1. Conexiuni Display TFT ST7735 ➔ ESP32
+| Pin Display | Pin ESP32 | Descriere / Funcție |
+| :--- | :--- | :--- |
+| **GND** | **GND** | Masă comună |
+| **VCC / VDD** | **3.3V** | Alimentare (Atenție: folosește 3.3V, nu 5V!) |
+| **SCL / SCK** | **GPIO 18** | Magistratura SPI Clock |
+| **SDA / MOSI** | **GPIO 23** | Magistratura SPI MOSI (Date) |
+| **RES / RST** | **GPIO 4** | Reset Display (`TFT_RST`) |
+| **DC / RS** | **GPIO 2** | Data / Command (`TFT_DC`) |
+| **CS** | **GPIO 15** | Chip Select (`TFT_CS`) |
+| **BLK / LED** | **3.3V** | Iluminare fundal (Backlight) |
+
+### 2. Conexiuni Butoane de Navigare ➔ ESP32
+*(Notă: Pinii folosesc `INPUT_PULLUP` intern, deci nu ai nevoie de rezistențe externe. Celălalt pin al butonului se leagă direct la **GND**).*
+* **BTN_NEXT (Următorul):** Conectat la **GPIO 13** ➡️ celălalt pol la **GND**
+* **BTN_PREV (Anteriorul):** Conectat la **GPIO 12** ➡️ celălalt pol la **GND**
+
+---
+
+## 📚 Biblioteci Obligatorii (Arduino IDE)
+Instalează următoarele biblioteci din **Library Manager** (`Tools -> Manage Libraries`):
+1. **Adafruit GFX Library** (de Adafruit)
+2. **Adafruit ST7735 and ST7789 Library** (de Adafruit)
+3. **ArduinoJson** (de Benoit Blanchon - versiunea 6.x sau 7.x)
+
+---
+
+## ⚙️ Ghid de Instalare & Configurare
+1. Clonează sau descarcă repository-ul.
+2. Deschide fișierul `MioveniQuantumOS_v6.8.ino` în Arduino IDE.
+3. Introdu datele rețelei tale Wi-Fi în secțiunea dedicată din cod:
+   ```cpp
+   const char* ssid     = "NUMELE_TAU_DE_WIFI";
+   const char* password = "PAROLA_TA_DE_WIFI";
+
+```
+
+4. Selectează placa ta (`ESP32 Dev Module`) și portul COM corespunzător.
+5. Apasă pe **Upload**!
+
+```
+
+---
+
+## 💻 2. Codul Sursa Final (`MioveniQuantumOS_v6.8.ino`)
+Creează un fișier cu exact acest nume în folderul proiectului tău și lipește codul de mai jos:
+
+```cpp
+/* ==============================================================================
+   MIOVENI QUANTUM OS - v6.8 (EXACT DATE & NTP SECONDS EDITION)
+   ============================================================================== */
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <time.h>
+
+// ======================== HARDWARE CONFIGURATION ======================
+#define TFT_CS     15
+#define TFT_RST    4
+#define TFT_DC     2
+#define BTN_NEXT   13
+#define BTN_PREV   12
+
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+// ======================== WIFI & NTP CREDENTIALS ======================
+const char* ssid     = "NUME_WIFI";
+const char* password = "PAROLA_WIFI";
+
+const char* ntpServer1 = "pool.ntp.org";
+const char* ntpServer2 = "time.nist.gov";
+const long  gmtOffset_sec = 7200;      // UTC+2 (România)
+const int   daylightOffset_sec = 3600; // Ora de vară (+1h)
+
+// Tabele pentru date în limba română
+const char* zileSaptamana[] = {"Duminica", "Luni", "Marti", "Miercuri", "Joi", "Vineri", "Sambata"};
+const char* luniAn[] = {"Ian", "Feb", "Mar", "Apr", "Mai", "Iun", "Iul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+// ======================== QUANTUM COLOR PALETTE =======================
+#define COLOR_BG          0x0005  // Negru Abisal
+#define COLOR_GLASS_CARD  0x1127  // Sticlă fumurie adâncă
+#define COLOR_GLASS_HIGH  0x326F  // Reflexie de lumină sus
+#define COLOR_GLASS_LOW   0x0813  // Umbră joasă
+#define COLOR_TEXT_MAIN   0xFFFF  // Alb pur
+#define COLOR_TEXT_MUTED  0x7BEF  // Gri tehnologic
+#define COLOR_ACCENT_CYAN 0x067F  // Cyan Neon (Liquid Glass)
+#define COLOR_ACCENT_BLUE 0x01EF  // Albastru electric
+#define COLOR_HOT         0xF940  // Roșu termic intensiv
+#define COLOR_COLD        0x03FF  // Albastru rece
+#define COLOR_WARN        0xFD20  // Portocaliu avertisment
+
+// ======================== TELEMETRY & WEATHER DATA ====================
+float temp_curenta = 0.0;
+float temp_afisata = 0.0; 
+float temp_resimtita = 0.0;
+float umiditate = 0.0;
+float viteza_vant = 0.0;
+int directie_vant = 0;
+float presiune_atmosferica = 0.0;
+float index_uv = 0.0;
+float vizibilitate = 0.0;
+
+int rssi_wifi = -100;
+long bytes_transferati = 5120;
+unsigned long timp_executie_ciclu = 0;
+unsigned long t_start_loop = 0;
+bool date_descarcate = false;
+
+// Navigation & State Management
+int pagina_curenta = 0;
+int pagina_urmatoare = 0;
+const int NUMAR_PAGINI = 6; // 6 pagini (inclusiv Ceas & Dată)
+bool necesita_redesenare = true;
+bool in_tranzitie = false;
+
+// Timers & Non-Blocking Intervals
+unsigned long timer_meteo = 0;
+unsigned long timer_animatii = 0;
+unsigned long timer_numeric_tween = 0;
+unsigned long timer_ceas_sec = 0;
+const unsigned long INTERVAL_METEO = 300000; 
+const unsigned long INTERVAL_ANIMATIE = 20;  
+const unsigned long INTERVAL_TWEEN = 40;     
+
+// Debounce Hardware Buttons
+unsigned long debounce_btn = 0;
+bool stare_next_ant = HIGH;
+bool stare_prev_ant = HIGH;
+
+// Mioveni Geographical Grid Matrix for FLIR Radar
+const uint8_t mioveni_grid[11][15] = {
+  {0,0,0,1,1,2,2,3,3,3,3,3,2,1,0},
+  {0,0,1,1,2,2,3,3,3,3,3,3,2,1,0},
+  {0,1,1,2,2,2,2,2,3,3,3,2,1,1,0},
+  {0,1,2,2,2,2,2,2,2,2,2,1,1,1,0}, 
+  {0,1,1,2,2,2,2,2,2,2,1,1,1,0,0}, 
+  {0,0,1,1,1,2,2,2,1,1,1,1,0,0,0}, 
+  {0,0,0,1,1,1,1,1,1,1,0,0,0,0,0},
+  {0,0,0,0,1,1,1,1,1,0,0,0,0,0,0}, 
+  {0,0,0,0,0,1,1,1,0,0,0,0,0,0,0},
+  {0,0,0,0,0,0,1,0,0,0,0,0,0,0,0},
+  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+};
+
+// ======================== PRECISION CENTERING ENGINE ==================
+
+void drawCenteredText(String text, int y, uint8_t size, uint16_t color, int centerX = 64) {
+  int textWidth = text.length() * 6 * size;
+  int startX = centerX - (textWidth / 2);
+  if (startX < 2) startX = 2;
+  tft.setTextSize(size);
+  tft.setTextColor(color);
+  tft.setCursor(startX, y);
+  tft.print(text);
+}
+
+// ======================== LIQUID GLASS UI ENGINE ======================
+
+void drawGlassCard(int x, int y, int w, int h) {
+  tft.fillRoundRect(x + 3, y + 3, w, h, 8, 0x0000);
+  tft.drawRoundRect(x + 2, y + 2, w, h, 8, 0x0802);
+  tft.fillRoundRect(x, y, w, h, 8, COLOR_GLASS_CARD);
+  tft.drawFastHLine(x + 5, y, w - 10, COLOR_GLASS_HIGH);
+  tft.drawFastHLine(x + 5, y + 1, w - 10, COLOR_GLASS_HIGH);
+  tft.drawFastHLine(x + 5, y + h - 1, w - 10, COLOR_GLASS_LOW);
+  tft.drawRoundRect(x, y, w, h, 8, COLOR_ACCENT_CYAN);
+}
+
+void playQuantumTransition() {
+  in_tranzitie = true;
+  for (int h = 0; h <= 80; h += 8) {
+    tft.fillRect(0, 80 - h, 128, h * 2, COLOR_BG);
+    tft.drawFastHLine(0, 80 - h, 128, COLOR_ACCENT_CYAN);
+    tft.drawFastHLine(0, 80 + h, 128, COLOR_ACCENT_BLUE);
+    delay(4);
+  }
+  
+  pagina_curenta = pagina_urmatoare;
+  tft.fillScreen(COLOR_BG);
+  drawStatusBar();
+  drawPageDots();
+  renderCurrentPageContent();
+  
+  for (int h = 80; h >= 0; h -= 8) {
+    tft.drawFastHLine(0, 80 - h, 128, COLOR_ACCENT_CYAN);
+    tft.drawFastHLine(0, 80 + h, 128, COLOR_ACCENT_BLUE);
+    delay(3);
+    tft.drawFastHLine(0, 80 - h, 128, COLOR_BG);
+    tft.drawFastHLine(0, 80 + h, 128, COLOR_BG);
+  }
+  in_tranzitie = false;
+  necesita_redesenare = true;
+}
+
+// ======================== STATUS BAR & NTP CLOCK ======================
+
+void drawStatusBar() {
+  tft.fillRect(0, 0, 128, 16, COLOR_BG); 
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_ACCENT_CYAN);
+  tft.setCursor(4, 4);
+  tft.print("MIOVENI OS");
+
+  struct tm timeinfo;
+  if(getLocalTime(&timeinfo)){
+    char timeBuffer[6];
+    strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeinfo);
+    tft.setTextColor(COLOR_TEXT_MAIN);
+    tft.setCursor(68, 4);
+    tft.print(timeBuffer);
+  }
+
+  rssi_wifi = WiFi.RSSI();
+  int calitate = (rssi_wifi > -50) ? 4 : (rssi_wifi > -70) ? 3 : (rssi_wifi > -85) ? 2 : 1;
+  int x_start = 114;
+  for (int i = 0; i < 4; i++) {
+    uint16_t color = (i < calitate) ? COLOR_TEXT_MAIN : COLOR_GLASS_CARD;
+    int h = (i + 1) * 3;
+    tft.drawFastVLine(x_start + (i * 3), 12 - h, h, color);
+    tft.drawFastVLine(x_start + (i * 3) + 1, 12 - h, h, color);
+  }
+}
+
+void drawPageDots() {
+  int x_center = 64;
+  int space = 8; 
+  int start_x = x_center - ((NUMAR_PAGINI - 1) * space) / 2;
+  tft.fillRect(0, 148, 128, 12, COLOR_BG); 
+  for (int i = 0; i < NUMAR_PAGINI; i++) {
+    if (i == pagina_curenta) {
+      tft.fillRoundRect(start_x + (i * space) - 4, 151, 8, 3, 1, COLOR_ACCENT_CYAN);
+    } else {
+      tft.fillCircle(start_x + (i * space), 152, 1, COLOR_TEXT_MUTED);
+    }
+  }
+}
+
+// ======================== RENDERING PAGINI ============================
+
+void renderPage0() {
+  drawGlassCard(8, 22, 112, 58);
+  drawCenteredText("TEMP. MIOVENI", 30, 1, COLOR_TEXT_MUTED);
+  
+  String valTemp = date_descarcate ? (String(temp_afisata, 1) + " C") : "--.- C";
+  drawCenteredText(valTemp, 45, 2, COLOR_TEXT_MAIN);
+
+  drawGlassCard(8, 86, 112, 54);
+  drawCenteredText("RESIMITA / UMIDITATE", 94, 1, COLOR_TEXT_MUTED);
+  
+  String valDetaliu = date_descarcate ? (String(temp_resimtita, 1) + "C | " + String((int)umiditate) + "%") : "--C | --%";
+  drawCenteredText(valDetaliu, 112, 1, COLOR_ACCENT_BLUE);
+}
+
+void renderPage1() {
+  drawGlassCard(8, 22, 112, 118);
+  drawCenteredText("TELEMETRIE METEO", 30, 1, COLOR_ACCENT_CYAN);
+  tft.drawFastHLine(16, 42, 96, COLOR_GLASS_HIGH);
+
+  drawCenteredText("Presiune Atmosferica:", 52, 1, COLOR_TEXT_MUTED);
+  String valPresiune = date_descarcate ? (String(presiune_atmosferica, 0) + " hPa") : "---- hPa";
+  drawCenteredText(valPresiune, 66, 1, COLOR_TEXT_MAIN);
+
+  drawCenteredText("Nivel UV / Soare:", 86, 1, COLOR_TEXT_MUTED);
+  String valUV = date_descarcate ? ("Grad " + String(index_uv, 1)) : "Grad --";
+  drawCenteredText(valUV, 100, 1, COLOR_HOT);
+
+  String valViz = date_descarcate ? ("Viz: " + String(vizibilitate, 1) + " km") : "Viz: -- km";
+  drawCenteredText(valViz, 120, 1, COLOR_TEXT_MUTED);
+}
+
+void renderPage2() {
+  drawGlassCard(6, 22, 116, 118);
+  drawCenteredText("MIOVENI FLIR LIVE", 28, 1, COLOR_ACCENT_CYAN);
+  tft.drawFastHLine(14, 38, 100, COLOR_GLASS_HIGH);
+  
+  drawCenteredText("THERMAL SENSOR ACTIVE", 124, 1, COLOR_TEXT_MUTED);
+}
+
+void renderPage3() {
+  drawGlassCard(8, 22, 112, 118);
+  drawCenteredText("DINAMICA VANTULUI", 30, 1, COLOR_ACCENT_BLUE);
+  tft.drawFastHLine(16, 42, 96, COLOR_GLASS_HIGH);
+
+  drawCenteredText("Viteza Vantului:", 55, 1, COLOR_TEXT_MUTED);
+  String valVant = date_descarcate ? (String(viteza_vant, 1) + " km/h") : "--.- km/h";
+  drawCenteredText(valVant, 72, 2, COLOR_TEXT_MAIN);
+
+  String valDir = date_descarcate ? ("Dir: " + String(directie_vant) + " grade") : "Dir: -- grade";
+  drawCenteredText(valDir, 102, 1, COLOR_TEXT_MUTED);
+  drawCenteredText("Flux: KINETIC STABIL", 118, 1, COLOR_ACCENT_CYAN);
+}
+
+void renderPage4() {
+  drawGlassCard(8, 22, 112, 118);
+  drawCenteredText("SYSTEM CORE V6.8", 28, 1, COLOR_ACCENT_CYAN);
+  tft.drawFastHLine(16, 38, 96, COLOR_GLASS_HIGH);
+
+  drawCenteredText("Procesor ESP32:", 46, 1, COLOR_TEXT_MUTED);
+  drawCenteredText("240 MHz Dual-Core", 58, 1, COLOR_TEXT_MAIN);
+
+  drawCenteredText("Timp Executie Loop:", 74, 1, COLOR_TEXT_MUTED);
+  drawCenteredText(String(timp_executie_ciclu) + " us", 86, 1, COLOR_HOT);
+
+  drawCenteredText("Rata Transfer Date:", 102, 1, COLOR_TEXT_MUTED);
+  drawCenteredText(String(bytes_transferati) + " Bytes", 114, 1, COLOR_ACCENT_BLUE);
+}
+
+void renderPage5() {
+  drawGlassCard(8, 22, 112, 56);
+  drawCenteredText("DATA CURENTA", 30, 1, COLOR_TEXT_MUTED);
+  
+  struct tm timeinfo;
+  if(getLocalTime(&timeinfo)){
+    String ziStr = String(zileSaptamana[timeinfo.tm_wday]);
+    drawCenteredText(ziStr, 45, 1, COLOR_ACCENT_CYAN);
+    
+    char dataBuf[20];
+    snprintf(dataBuf, sizeof(dataBuf), "%02d %s %d", timeinfo.tm_mday, luniAn[timeinfo.tm_mon], timeinfo.tm_year + 1900);
+    drawCenteredText(String(dataBuf), 60, 1, COLOR_TEXT_MAIN);
+  } else {
+    drawCenteredText("SYNCING...", 45, 1, COLOR_TEXT_MUTED);
+  }
+
+  drawGlassCard(8, 84, 112, 60);
+  drawCenteredText("ORA EXACTA NTP", 92, 1, COLOR_TEXT_MUTED);
+  
+  if(getLocalTime(&timeinfo)){
+    char oraBuf[10];
+    snprintf(oraBuf, sizeof(oraBuf), "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    drawCenteredText(String(oraBuf), 108, 2, COLOR_HOT);
+  } else {
+    drawCenteredText("--:--:--", 108, 2, COLOR_HOT);
+  }
+}
+
+void renderCurrentPageContent() {
+  if (pagina_curenta == 0) renderPage0();
+  else if (pagina_curenta == 1) renderPage1();
+  else if (pagina_curenta == 2) renderPage2();
+  else if (pagina_curenta == 3) renderPage3();
+  else if (pagina_curenta == 4) renderPage4();
+  else if (pagina_curenta == 5) renderPage5();
+}
+
+// ======================== ANIMATIONS & REFRESH ========================
+
+uint16_t getThermalColor(int val) {
+  if (val > 85) return 0xFFFF;      
+  if (val > 70) return 0xF800;      
+  if (val > 50) return 0xFD20;      
+  if (val > 35) return 0xFFE0;      
+  if (val > 20) return 0x07E0;      
+  return 0x001F;                    
+}
+
+void updateAnimations() {
+  unsigned long ms_curent = millis();
+
+  if (ms_curent - timer_ceas_sec > 1000) {
+    timer_ceas_sec = ms_curent;
+    if (!in_tranzitie) {
+      struct tm timeinfo;
+      if(getLocalTime(&timeinfo)){
+        char timeBuffer[6];
+        strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeinfo);
+        tft.fillRect(68, 2, 40, 12, COLOR_BG);
+        tft.setTextSize(1);
+        tft.setTextColor(COLOR_TEXT_MAIN);
+        tft.setCursor(68, 4);
+        tft.print(timeBuffer);
+
+        if (pagina_curenta == 5) {
+          tft.fillRect(16, 108, 96, 20, COLOR_GLASS_CARD);
+          char oraBuf[10];
+          snprintf(oraBuf, sizeof(oraBuf), "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+          drawCenteredText(String(oraBuf), 108, 2, COLOR_HOT);
+        }
+      }
+    }
+  }
+
+  if (ms_curent - timer_numeric_tween > INTERVAL_TWEEN) {
+    timer_numeric_tween = ms_curent;
+    if (abs(temp_curenta - temp_afisata) > 0.05) {
+      temp_afisata += (temp_curenta > temp_afisata) ? 0.1 : -0.1;
+      if (pagina_curenta == 0 && !in_tranzitie) {
+        tft.fillRect(16, 45, 96, 20, COLOR_GLASS_CARD);
+        String valTemp = String(temp_afisata, 1) + " C";
+        drawCenteredText(valTemp, 45, 2, COLOR_TEXT_MAIN);
+      }
+    }
+  }
+
+  if (ms_curent - timer_animatii > INTERVAL_ANIMATIE) {
+    timer_animatii = ms_curent;
+
+    if (pagina_curenta == 2 && !in_tranzitie) {
+      static float anim_time = 0;
+      float fluid_speed = 0.12 + (viteza_vant * 0.015);
+      anim_time += fluid_speed;
+      
+      float wind_rad = directie_vant * (PI / 180.0);
+      float vx = cos(wind_rad);
+      float vy = sin(wind_rad);
+
+      int start_x = 16;
+      int start_y = 44;
+      int base_heat = map((int)temp_curenta, -10, 40, 15, 55);
+
+      for(int y = 0; y < 11; y++) {
+        for(int x = 0; x < 15; x++) {
+           int zone = mioveni_grid[y][x];
+           int heat = base_heat; 
+           
+           if(zone == 0) heat -= 12;      
+           else if(zone == 1) heat += 4;  
+           else if(zone == 2) heat += 18; 
+           else if(zone == 3) heat += 40; 
+           
+           float wave = (x * vx) + (y * vy);
+           int noise = sin(wave * 0.7 + anim_time) * 14; 
+           heat += noise;
+           heat = constrain(heat, 0, 100);
+           
+           tft.fillRect(start_x + (x * 6), start_y + (y * 6), 6, 6, getThermalColor(heat));
+        }
+      }
+      
+      tft.drawRect(start_x - 2, start_y - 2, (15 * 6) + 4, (11 * 6) + 4, COLOR_GLASS_LOW);
+      tft.drawFastHLine(start_x, start_y + 33, 90, COLOR_ACCENT_CYAN); 
+    }
+  }
+}
+
+// ======================== API WEATHER & NTP ===========================
+
+void descarcaDateMeteo() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  tft.fillCircle(115, 8, 3, COLOR_HOT); 
+  
+  WiFiClientSecure *client = new WiFiClientSecure;
+  client->setInsecure(); 
+  HTTPClient http;
+  
+  String url = "https://api.open-meteo.com/v1/forecast?latitude=44.85&longitude=24.88&current=temperature_2m,apparent_temperature,relative_humidity_2m,surface_pressure,windspeed_10m,winddirection_10m,uv_index,visibility&forecast_days=1";
+  
+  if (http.begin(*client, url)) {
+    int codRaspuns = http.GET();
+    if (codRaspuns == 200) {
+      String payload = http.getString();
+      bytes_transferati = payload.length();
+      
+      DynamicJsonDocument doc(12288);
+      if (!deserializeJson(doc, payload)) {
+        temp_curenta = doc["current"]["temperature_2m"].as<float>();
+        temp_resimtita = doc["current"]["apparent_temperature"].as<float>();
+        umiditate = doc["current"]["relative_humidity_2m"].as<float>();
+        presiune_atmosferica = doc["current"]["surface_pressure"].as<float>();
+        viteza_vant = doc["current"]["windspeed_10m"].as<float>();
+        directie_vant = doc["current"]["winddirection_10m"].as<int>();
+        index_uv = doc["current"]["uv_index"].as<float>();
+        vizibilitate = (doc["current"]["visibility"].as<float>()) / 1000.0;
+        
+        date_descarcate = true;
+        necesita_redesenare = true;
+      }
+    }
+    http.end();
+  }
+  delete client;
+  tft.fillCircle(115, 8, 3, COLOR_ACCENT_CYAN);
+}
+
+// ======================== LOADING SCREEN ==============================
+
+void playBootAnimation() {
+  tft.fillScreen(COLOR_BG);
+  
+  drawCenteredText("Quantum Core Boot", 10, 1, COLOR_TEXT_MUTED);
+  delay(200);
+  drawCenteredText("Mioveni Grid: ONLINE", 22, 1, COLOR_TEXT_MAIN);
+  delay(250);
+  drawCenteredText("Thermal Sensors: READY", 34, 1, COLOR_TEXT_MUTED);
+  delay(250);
+  drawCenteredText("NTP DateTime: SYNC", 46, 1, COLOR_ACCENT_CYAN);
+  delay(300);
+
+  tft.drawRect(14, 130, 100, 8, COLOR_GLASS_HIGH);
+  for(int p = 0; p <= 96; p += 4) {
+    tft.fillRect(16, 132, p, 4, COLOR_ACCENT_CYAN);
+    delay(20);
+  }
+
+  for(int i = 0; i < 160; i += 5) {
+    tft.drawFastHLine(0, i, 128, COLOR_ACCENT_CYAN);
+    tft.fillRect(0, 0, 128, i, COLOR_BG);
+    delay(8);
+  }
+
+  tft.drawRoundRect(20, 36, 88, 88, 22, COLOR_GLASS_HIGH);
+  tft.drawRoundRect(24, 40, 80, 80, 18, COLOR_ACCENT_CYAN);
+  
+  drawCenteredText("Q_OS", 62, 2, COLOR_TEXT_MAIN);
+  drawCenteredText("V6.8", 85, 1, COLOR_ACCENT_BLUE);
+
+  delay(1000);
+}
+
+// ======================== SETUP & MAIN LOOP ===========================
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(BTN_NEXT, INPUT_PULLUP);
+  pinMode(BTN_PREV, INPUT_PULLUP);
+
+  tft.initR(INITR_BLACKTAB); 
+  tft.setRotation(0); 
+  
+  playBootAnimation();
+
+  tft.fillScreen(COLOR_BG);
+  drawGlassCard(12, 45, 104, 68);
+  drawCenteredText("Connecting to", 60, 1, COLOR_TEXT_MAIN);
+  drawCenteredText(ssid, 75, 1, COLOR_ACCENT_CYAN);
+  
+  WiFi.begin(ssid, password);
+  int progress = 0;
+  while (WiFi.status() != WL_CONNECTED && progress < 84) {
+    tft.fillRect(20, 92, progress, 4, COLOR_ACCENT_CYAN);
+    delay(100);
+    progress += 3;
+  }
+  
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2);
+
+  descarcaDateMeteo();
+  temp_afisata = temp_curenta; 
+  necesita_redesenare = true;
+}
+
+void loop() {
+  t_start_loop = micros(); 
+  unsigned long ms_curent = millis();
+
+  if (!in_tranzitie) {
+    bool citire_next = digitalRead(BTN_NEXT);
+    if (citire_next == LOW && stare_next_ant == HIGH && (ms_curent - debounce_btn > 220)) {
+      pagina_urmatoare = (pagina_curenta + 1) % NUMAR_PAGINI;
+      playQuantumTransition();
+      debounce_btn = ms_curent;
+    }
+    stare_next_ant = citire_next;
+
+    bool citire_prev = digitalRead(BTN_PREV);
+    if (citire_prev == LOW && stare_prev_ant == HIGH && (ms_curent - debounce_btn > 220)) {
+      pagina_urmatoare = (pagina_curenta - 1 + NUMAR_PAGINI) % NUMAR_PAGINI;
+      playQuantumTransition();
+      debounce_btn = ms_curent;
+    }
+    stare_prev_ant = citire_prev;
+  }
+
+  if (necesita_redesenare && !in_tranzitie) {
+    tft.fillScreen(COLOR_BG);
+    drawStatusBar();
+    drawPageDots();
+    renderCurrentPageContent();
+    necesita_redesenare = false;
+  }
+
+  updateAnimations();
+
+  if (ms_curent - timer_meteo > INTERVAL_METEO) {
+    descarcaDateMeteo();
+    timer_meteo = ms_curent;
+  }
+
+  timp_executie_ciclu = micros() - t_start_loop;
+}
+
+```
